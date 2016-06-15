@@ -3,23 +3,23 @@
 
 import re
 import urllib2
-import urllib
+import os
 import Queue
 import threading
+import time
 
-THREAD_NUM = 2
+THREAD_NUM = 100
 
 class RedirctHandler(urllib2.HTTPRedirectHandler):
     def http_error_301(self, req, fp, code, msg, headers):
-        print "Oops! 301"
+        #print "Oops! 301"
         pass
     def http_error_302(self, req, fp, code, msg, headers):
-        print "Oops! 302"
+        #print "Oops! 302"
         pass
 
 class Checker:
     def __init__(self, dict):
-        #self.__dict = ["城市", "外卖", "美食", "测试"]
         self.__dict = dict
         self.user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_3) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/47.0.2526.111 Safari/537.36'
         self.header = {'User-Agent': self.user_agent}
@@ -41,19 +41,27 @@ class Checker:
         url = self.__geturl(url)
         urllib2.install_opener(self.opener)
         request = urllib2.Request(url, headers=self.header)
-        response = urllib2.urlopen(request)
-
+        retry = 0
         cont = ""
-        try:
-            cont = response.read().decode('gbk').encode('utf-8')
-        except Exception, e:
-            cont = response.read().decode('utf-8').encode('utf-8')
+        while True:
+            if retry < 2:
+                try:
+                    response = urllib2.urlopen(request, timeout=5)
+                    cont = response.read().decode('gbk', 'ignore').encode('utf-8')
+                    break
+                except Exception, e:
+                    retry += 1
+            else:
+                return -1
+
+        if cont == "":
+            return 0
         for key in self.__dict:
             pattern = re.compile(key)
             items = re.findall(pattern, cont)
             if len(items) > 0:
                 return key
-        return None
+        return 0
 
 
 class MultiAna(threading.Thread):
@@ -66,28 +74,32 @@ class MultiAna(threading.Thread):
         self.__error_file = open("tmp/tmp_" + self.num + ".err", "w")
         self.__checker = Checker(dict)
 
-
     def run(self):
         while True:
             try:
-                item = self.input.get()
+                item = self.input.get(False)
                 parts = item.split("\t")
                 res = self.__checker.check(parts[0])
-                if res:
+                if res == -1:
+                    self.__error_file.write(parts[0] + "\n")
+                elif res == 0:
+                    self.__fail_file.write(item)
+                    self.__fail_file.write("\n")
+                else:
                     self.__succ_file.write(item)
                     self.__succ_file.write("\t")
                     self.__succ_file.write(res.decode('utf-8').encode('cp936'))
                     self.__succ_file.write("\n")
-                else:
-                    self.__fail_file.write(item)
-                    self.__fail_file.write("\n")
                 self.input.task_done()
             except Exception as e:
-                self.__error_file.write(parts[0] + "\t" + str(e) + "\n")
-                self.input.task_done()
+                break
+        self.__succ_file.close()
+        self.__fail_file.close()
+        self.__error_file.close()
 
 
 if __name__ == '__main__':
+    print time.strftime('%Y-%m-%d %X', time.localtime(time.time()))
     dict = []
     indata = Queue.Queue(0)
     file = open("site.txt", "r")
@@ -109,7 +121,12 @@ if __name__ == '__main__':
             dict.append(key)
 
     for i in range(THREAD_NUM):
-        getter = MultiAna(indata, i, dict)
-        getter.setDaemon(True)
-        getter.start()
+        runner = MultiAna(indata, i, dict)
+        runner.setDaemon(True)
+        runner.start()
     indata.join()
+    print time.strftime('%Y-%m-%d %X', time.localtime(time.time()))
+    time.sleep(1)
+
+    cmd = "cat tmp/tmp_*.succ > tmp/onlinetrade.txt; cat tmp/tmp_*.fail > tmp/normal.txt; cat tmp/tmp_*.err > tmp/diesite.txt; cat tmp/tmp_* > tmp/all.txt; rm -f tmp/tmp_*;"
+    os.system(cmd)
